@@ -1,65 +1,113 @@
 import streamlit as st
-import google.generativeai as genai
+import requests
 
-# 1. Load API key securely from Streamlit secrets
-# Add this to .streamlit/secrets.toml:
-#   GEMINI_API_KEY = "your-real-key-here"
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-except (KeyError, FileNotFoundError):
-    st.error("⚠️ GEMINI_API_KEY not found. Add it to .streamlit/secrets.toml")
-    st.stop()
+# ----------------------------
+# Page Config
+# ----------------------------
+st.set_page_config(page_title="OpenRouter AI Chatbot", page_icon="🤖", layout="centered")
+st.title("🤖 OpenRouter AI Chatbot")
+st.caption("Chat with different AI models using your OpenRouter API key")
 
-genai.configure(api_key=API_KEY)
-
-# 2. Page setup
-st.set_page_config(page_title="Apna Chatbot", page_icon="🤖", layout="centered")
-st.title("Chatbot made by AMG")
-st.caption("A simple chatbot built with Python, Gemini, and Streamlit")
-
-# Sidebar controls
+# ----------------------------
+# Sidebar - Settings
+# ----------------------------
 with st.sidebar:
-    st.subheader("Settings")
-    model_name = st.selectbox(
-        "Model",
-        ["gemini-2.5-flash", "gemini-2.5-pro"],
+    st.header("⚙️ Settings")
+
+    api_key = st.text_input("OpenRouter API Key", type="password", placeholder="sk-or-v1-...")
+
+    model = st.selectbox(
+        "Choose a model",
+        [
+            "openai/gpt-4o-mini",
+            "anthropic/claude-3.5-sonnet",
+            "google/gemini-2.0-flash-exp:free",
+            "meta-llama/llama-3.3-70b-instruct",
+            "mistralai/mistral-7b-instruct:free",
+            "poolside/laguna-m.1:freepoolside/laguna-m.1:free"
+        ],
         index=0,
     )
-    if st.button("🗑️ Clear chat"):
-        st.session_state.pop("chat_session", None)
+
+    system_prompt = st.text_area(
+        "System Prompt (optional)",
+        value="You are a helpful assistant.",
+        height=100,
+    )
+
+    temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.1)
+
+    st.divider()
+    if st.button("🗑️ Clear Chat History", use_container_width=True):
+        st.session_state.messages = []
         st.rerun()
 
-# 3. Initialize chat session (recreate if model choice changes)
-if "chat_session" not in st.session_state or st.session_state.get("model_name") != model_name:
-    model = genai.GenerativeModel(model_name)
-    st.session_state.chat_session = model.start_chat(history=[])
-    st.session_state.model_name = model_name
+    st.markdown(
+        "Get your free API key at [openrouter.ai/keys](https://openrouter.ai/keys)"
+    )
 
-# 4. Display conversation history
-for message in st.session_state.chat_session.history:
-    role = "user" if message.role == "user" else "assistant"
-    with st.chat_message(role):
-        st.markdown(message.parts[0].text)
+# ----------------------------
+# Session State - Chat History
+# ----------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# 5. Handle new input
-if user_prompt := st.chat_input("Say something..."):
-    with st.chat_message("user"):
-        st.markdown(user_prompt)
+# ----------------------------
+# Display Chat History
+# ----------------------------
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-    with st.chat_message("assistant"):
-        response_placeholder = st.empty()
-        full_response = ""
+# ----------------------------
+# Function to Call OpenRouter API
+# ----------------------------
+def get_ai_response(messages, api_key, model, temperature):
+    url = "https://openrouter.ai/api/v1/chat/completions"
 
-        try:
-            response = st.session_state.chat_session.send_message(user_prompt, stream=True)
-            for chunk in response:
-                # Some chunks may not carry text (e.g. safety blocks) — guard against that
-                if chunk.text:
-                    full_response += chunk.text
-                    response_placeholder.markdown(full_response + "▌")
-            response_placeholder.markdown(full_response or "*No response generated.*")
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
-            # Remove the failed exchange from history so it doesn't corrupt future turns
-            if st.session_state.chat_session.history:
-                st.session_state.chat_session.history = st.session_state.chat_session.history[:-1]
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
+
+    if response.status_code == 200:
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+    else:
+        raise Exception(f"API Error {response.status_code}: {response.text}")
+
+# ----------------------------
+# Chat Input
+# ----------------------------
+user_input = st.chat_input("Type your message here...")
+
+if user_input:
+    if not api_key:
+        st.error("⚠️ Please enter your OpenRouter API key in the sidebar first.")
+    else:
+        # Add user message to history and display it
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # Build message list including system prompt
+        api_messages = [{"role": "system", "content": system_prompt}]
+        api_messages += st.session_state.messages
+
+        # Get and display AI response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    reply = get_ai_response(api_messages, api_key, model, temperature)
+                    st.markdown(reply)
+                    st.session_state.messages.append({"role": "assistant", "content": reply})
+                except Exception as e:
+                    st.error(f"Something went wrong: {e}")
